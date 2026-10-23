@@ -1,0 +1,33 @@
+{
+  "preset": "narrative_proposal",
+  "header_pattern": "memo_masthead",
+  "named_override": "ChineseAcademic",
+  "page_mm": [
+    210,
+    297
+  ],
+  "margins_mm": 22,
+  "table_width_dxa": 9411,
+  "body_size_pt": 11,
+  "body_after_pt": 5,
+  "body_line_spacing": 1.25,
+  "fonts": [
+    "Times New Roman",
+    "宋体",
+    "Cambria Math"
+  ],
+  "equations": 11,
+  "author_identity": "omitted until supplied",
+  "font_roles": {
+    "cjk_rendered_spans": {
+      "SimSun": 769,
+      "SimHei": 36
+    },
+    "text_and_equations_unchanged": true,
+    "theme_overrides_removed": true,
+    "body": "SimSun",
+    "headings": "SimHei",
+    "latin": "Times New Roman",
+    "math_in_docx": "Cambria Math"
+  }
+}

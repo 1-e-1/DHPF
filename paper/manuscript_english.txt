@@ -1,0 +1,279 @@
+# Dynamic Helmholtz Particle Flow for Multivariate Time-Series Generation
+
+## Abstract
+
+We introduce Dynamic Helmholtz Particle Flow (DHPF), a generative model that transports random initial states through a shared, time-dependent acceleration field. A neural network predicts a finite set of moving sources, and each source contributes a radial potential gradient and a low-rank skew-symmetric transformation of that gradient. Integrating the resulting second-order dynamics produces a complete multivariate time-series window. We train the model by matching its generated endpoints to a minibatch of observations using optimal assignment and differentiating through the numerical solver. This formulation learns the terminal distribution without prescribing intermediate trajectories or velocity targets. Experiments on synthetic oscillations, Lorenz trajectories, and human activity recordings compare DHPF with adversarial, diffusion, flow-matching, and drifting objectives over five training seeds. Relative to our GAN baseline, DHPF reduces mean autocorrelation error on Sine by 31.9% and mean zero-lag channel-correlation error on Lorenz by 39.6%. These improvements coexist with poorer amplitude fidelity and forecasting utility. The results identify a concrete trade-off between dependency statistics and distribution fidelity in generative models with explicit field structure.
+
+## 1 Introduction
+
+Generating a multivariate time series requires modeling both the distribution of individual observations and their dependence across time and channels. These requirements matter when synthetic sequences are used to develop or evaluate downstream models: matching a few summary statistics can still leave substantial differences in amplitude, frequency content, or predictive information. A useful generative model should therefore be assessed through several complementary views of the joint distribution.
+
+Current generative approaches learn noise-to-data mappings through different training signals. Adversarial models learn from a discriminator that compares generated and observed samples [18]. Denoising diffusion models learn to reverse a prescribed corruption process [3]. Flow Matching learns a vector field from conditional paths [4], and minibatch optimal transport can improve the coupling used to construct those paths [5]. Drifting Models update a generator using a distribution-dependent displacement during training [6]. These formulations separate two design choices: how a generator represents a distribution and how its parameters are fitted to data. The representation itself can introduce structure that is not imposed by the training objective.
+
+We study a field representation in which a neural network predicts shared sources rather than a separate vector for every queried sample. At a given generation time, all samples interact with the same source centers, widths, and coefficients. The dependence on the sample enters through analytic kernels. This separation makes selected differential properties of the field explicit and allows its parameters to be reused across a batch. It also restricts the family of available vector fields, creating an empirical question: which aspects of a time-series distribution does this structure preserve, and where does it limit the fit?
+
+Our model, Dynamic Helmholtz Particle Flow (DHPF), evolves position and auxiliary velocity under a learned acceleration field. Each position represents an entire time-series window. The acceleration combines radial potential gradients with skew-symmetric transforms that produce solenoidal components. Source parameters vary with generation time and, for conditional generation, an external class label. Training first integrates the current model and then matches the generated endpoints to a real minibatch. Gradients propagate through the selected endpoint pairs and the discrete integration steps. Thus, the terminal distribution supplies the supervision while intermediate paths remain learned quantities.
+
+This paper makes three contributions. First, it specifies a generative method that combines shared dynamic sources, structured acceleration, and terminal minibatch transport, including explicit training and sampling procedures. Second, it establishes the component structure and finite-time well-posedness of the continuous dynamics under bounded parameters and positive kernel widths. Third, it characterizes the method on three time-series tasks through distribution metrics, dependency statistics, downstream probes, and component controls. The experiments show lower Sine autocorrelation error and lower Lorenz zero-lag channel-correlation error than the five baseline implementations, alongside losses in amplitude fidelity and forecasting utility. These findings give a concrete account of what the field representation contributes under a fixed training budget.
+
+{{figure:fig0_method}}
+
+Figure 1. DHPF learns a shared acceleration field from terminal distribution matching. The source network receives generation time and an optional condition. Analytic kernels query the resulting field at each sample position, and a second-order solver maps random initial states to complete time-series windows. During training, generated endpoints are matched to observed windows; the selected squared-distance loss is differentiated through the solver and source network. The matching branch is used only during training. The diagram describes computation, not a physical trajectory in observation time.
+
+## 2 Generative Modeling of Multivariate Time Series
+
+Let Y be a real-valued window with L time points and C channels, and let y=vec(Y) belong to a d-dimensional space, where d=LC. We seek a generator Tθ that maps a random variable z to a sample from the distribution of y. For class-conditional generation, the target is the conditional distribution p_data(y|c), with c denoting an activity label. In our experiments, L=128, and C is either 3 or 9. Channel normalization is fitted on the training split.
+
+We distinguish observation time, which indexes the L entries within a window, from generation time t in [0,1], which parameterizes the transformation from noise to a sample. A state at one generation time is a candidate for the entire window. This formulation supports unconditional window generation and discrete class conditioning. Dependencies among observation times are learned through the joint distribution of the window coordinates.
+
+Our training objective compares finite sets of generated and observed windows. For two equally weighted batches of size B, the squared empirical Wasserstein distance is the minimum average squared Euclidean cost over permutations of their elements. This gives a scalar loss on generated endpoints. The source network, dynamical system, and numerical solver together determine how a change in the parameters changes those endpoints. Section 3 specifies this generator before defining the assignment loss and its gradient.
+
+## 3 Dynamic Helmholtz Particle Flow
+
+### 3.1 Random Initial States and Second-Order Generation
+
+DHPF augments the sample position x with an auxiliary velocity v. Its continuous dynamics and terminal generator are
+
+{{equation:1}}
+
+The acceleration depends on the current position, generation time, and optional condition. The auxiliary velocity carries information between integration steps. At t=1, the position is reshaped into an L-by-C window, while the terminal velocity is discarded. Equation (1) defines a deterministic generator once the parameters, condition, and initial state are fixed.
+
+We sample the initial position, direction, and speed independently:
+
+{{equation:2}}
+
+Here N denotes a normal distribution. The direction obtained by normalizing g is uniform on the unit sphere, and the initial speed follows a half-normal distribution. Consequently, the expected squared norm of the initial velocity is one for every data dimension. The implementation uses numerically stable vector normalization. Both initial position and initial velocity contribute randomness to the terminal sample.
+
+### 3.2 Shared Dynamic Sources
+
+The acceleration field is represented by N sources. Source i has a center Pᵢ, a scalar radial coefficient αᵢ, a positive width σᵢ, and a skew-symmetric matrix Sᵢ. A shared network maps generation time and the external condition to these quantities:
+
+{{equation:3}}
+
+At fixed t and c, these parameters are common to all generated samples. The network operates on source identities and time features; sample positions enter only when the field is queried. Source parameters at all solver evaluation times can therefore be computed together before integrating a batch.
+
+In the evaluated implementation, the network uses 32 learned source identities of width 64 and two residual MLP blocks. Its time encoding contains t and eight sine/cosine frequency pairs. An optional class embedding is added to the source features. Bounded output transformations constrain centers, coefficients, and low-rank factors, while a positive lower bound on σᵢ keeps the kernels smooth. Appendix B gives the complete parameterization. The generative formulation permits different source networks; all experiments here use this fixed implementation.
+
+### 3.3 Radial and Solenoidal Acceleration
+
+Each source defines a smooth potential centered at Pᵢ. Writing rᵢ=x−Pᵢ and suppressing the dependence of source parameters on t and c, we use
+
+{{equation:4}}
+
+The kernel Kᵢ points in the radial direction and has a finite magnitude at every position. The total acceleration is the sum of a radial component and a solenoidal component:
+
+{{equation:5}}
+
+For fixed time and condition, the radial field is a gradient field. Each SᵢKᵢ has zero divergence because its Jacobian is the product of a skew-symmetric matrix and a symmetric Hessian. It is also orthogonal to the corresponding radial direction. These properties follow directly from the representation and hold for any learned source parameters satisfying the stated conditions.
+
+To avoid storing dense d-by-d matrices, we parameterize Sᵢ through two d-by-r factors:
+
+{{equation:6}}
+
+Equation (6) evaluates a skew-symmetric action using matrix-vector products with d-by-r factors. Its matrix rank is at most 2r, and we use r=2. The acceleration remains sample-dependent through Kᵢ even though its sources are shared across the batch. The positive width bound and bounded source parameters yield a globally Lipschitz acceleration on the finite generation interval. Appendix A provides the derivative bounds and proves existence and uniqueness of the continuous solution.
+
+### 3.4 Terminal Distribution Matching
+
+We train the field using the distribution of its generated endpoints. Given B observed windows and B independent initial states, we first compute generated positions x̂ᵢ=Tθ(zᵢ;c). We then solve the assignment problem and evaluate the selected endpoint loss:
+
+{{equation:7}}
+
+The set S_B contains all permutations of B indices. A linear assignment solver returns the optimal permutation, and automatic differentiation treats this discrete index as fixed when differentiating the selected squared distances. Where the optimal permutation is unique and locally unchanged, this is the gradient of the corresponding branch of the empirical transport objective. Permutation changes create nonsmooth boundaries. The loss averages over samples and sums over coordinates. Its expectation is a minibatch transport objective, whose statistical properties differ from population transport [14].
+
+The placement of the matching step is central to the training procedure. In OT-CFM, minibatch transport couples initial noise and observations before conditional paths are constructed [5]. In DHPF, matching is computed between the current generated endpoints and observations after integration. The resulting gradient depends on the entire discrete trajectory of the current generator. Training therefore includes solver backpropagation, while inference requires only initial-state sampling and integration.
+
+For conditional generation, each update first selects a class uniformly and then draws a real batch from that class. The complete generated batch uses the same condition, so endpoint matching remains within class. The experiments optimize the endpoint loss alone, with no terminal velocity target or additional sequence-smoothing penalty.
+
+### 3.5 Training and Sampling Algorithms
+
+We use the explicit midpoint method with K=32 steps and step size h=1/K. Given the current state, one integration step is
+
+{{equation:8}}
+
+The condition c is omitted from Equation (8) for readability. The solver performs two field queries per step, giving 64 queries per generated sample. Source features are prepared at the K grid points and K midpoints. Training retains the computation graph through these operations. Algorithms 1 and 2 summarize the complete procedures.
+
+{{algorithm:training}}
+
+{{algorithm:sampling}}
+
+For a batch of B samples, evaluating all low-rank source contributions at one time costs O(BNdr), excluding the source network. Forming the endpoint cost matrix requires O(B²d) work and O(B²) storage, followed by the assignment solve. This separation identifies the two main costs of training: differentiable integration and batch matching. The relative costs are measured in Section 4.5.
+
+## 4 Experiments
+
+We evaluate three questions: how accurately DHPF matches complete-window distributions, which dependency statistics benefit from its field representation, and whether these properties translate into downstream utility. The study includes unconditional Sine and Lorenz generation and class-conditional human activity generation. Each main method is trained with five seeds, producing 90 runs across the three tasks.
+
+### 4.1 Experimental Setup
+
+Data. Sine contains three-channel mixtures of oscillations with random amplitudes, frequencies, and phases. Some parameters are shared across channels to introduce dependence. Lorenz contains windows from the standard three-dimensional Lorenz system. Each synthetic task has 10,000 training, 2,000 validation, and 2,000 test windows. UCI HAR contains 128-point recordings of nine accelerometer and gyroscope channels for six activities [17]. Its training, validation, and test sets contain 5,883, 1,469, and 2,947 windows, respectively, with disjoint subjects across splits. Appendix B specifies the construction and split details.
+
+Baselines. We compare DHPF with GAN, DDPM-v, independent conditional flow matching (I-CFM), optimal-transport conditional flow matching (OT-CFM), and Drifting-raw. The baseline generators use the same family of vector MLPs, with widths chosen to approximate DHPF's generator parameter count. GAN uses a separate spectral-normalized discriminator. DDPM-v uses a cosine schedule and v prediction [15,16], with 1,000 ancestral sampling steps. Both CFM models use linear interpolation and the explicit midpoint solver with 64 field evaluations. Drifting-raw adapts the original drifting objective to normalized data coordinates and uses a single-pass MLP. It has no pretrained feature encoder or sample queue. These implementations compare training formulations with basic vector networks; TimeGAN and Diffusion-TS provide context for specialized time-series architectures [1,2].
+
+Training. Every main run uses 5,000 updates and batch size 128. For each method and dataset, a separate seed-100 search compares learning rates 0.0002 and 0.001 over 1,000 updates. The learning rate is selected by validation sliced Wasserstein distance. Formal runs use seeds 0–4, are evaluated every 1,000 updates, and retain the checkpoint with the lowest validation score. Evaluation uses fixed generation seeds and projections. Test data do not enter hyperparameter or checkpoint selection. All runs use a single RTX 5070 Ti with 16 GB memory. Matching the generator size and update count leaves different computation per update; Table 5 reports that difference explicitly.
+
+Metrics. We measure distribution fidelity using squared sliced Wasserstein distance (SW₂²) over 256 projections and an RBF-kernel MMD² statistic. Temporal dependence is measured by the RMSE between autocorrelation functions (ACF) at lags 0–32. Channel dependence is measured by the RMSE between zero-lag Pearson correlation matrices (Corr₀). Power-spectrum RMSE captures frequency-dependent amplitude differences. On HAR, distribution metrics are computed separately for each activity and then averaged equally over the six classes. The tables report means and sample standard deviations over five training seeds.
+
+Downstream utility. In train-on-synthetic, test-on-real (TSTR) evaluation, an external model is fitted to generated windows and evaluated on real test windows. For Sine and Lorenz, ridge regression predicts the last 32 time points from the first 96. For HAR, we evaluate activity classification with logistic regression and a closed-form ridge classifier. Probe hyperparameters are selected on real validation data. The regression probe evaluates the usefulness of generated joint windows; generation itself is unconditional. Equal-sized real training samples provide a separate reference. Full metric and probe definitions appear in Appendix B.
+
+### 4.2 Distribution Fidelity and Temporal Dependence
+
+DHPF produces the lowest mean ACF error on Sine among the six evaluated methods. Its error is 0.0523±0.0037, compared with 0.0768±0.0099 for GAN, a 31.9% reduction in the mean (Table 1). The direction of this comparison is consistent across all five training seeds. DHPF also has the lowest mean Corr₀ error, although it outperforms GAN on that metric in four of the five seed pairs.
+
+{{table:sine}}
+
+The improvements in normalized dependence statistics come with a distributional cost. DHPF has a mean SW₂² of 0.1923, compared with 0.0682 for GAN. Its power-spectrum error and TSTR forecasting error are also higher. The generated channel variance is 0.336 times the test-set variance on average. ACF normalization removes amplitude scale, so a model can reproduce temporal correlation while producing under-dispersed signals. Figure 2 places the dependency and distribution metrics on separate axes to make this trade-off visible.
+
+On Lorenz, DHPF has the lowest mean Corr₀ error, 0.0256±0.0026 (Table 2). This is 39.6% below GAN's mean error, and the difference has the same direction in all five seed pairs. DHPF's SW₂² is lower than those of DDPM-v, I-CFM, and OT-CFM, but remains higher than GAN's. Its ACF error is also higher than GAN's. Thus, the observed gain is specific to zero-lag channel dependence on this task.
+
+{{table:lorenz}}
+
+{{figure:fig1_tradeoff}}
+
+Figure 2. Dependency accuracy and distribution fidelity favor different models. Each point is the mean of five training seeds, with horizontal and vertical sample-standard-deviation bars. Left: Sine ACF RMSE against SW₂². Right: Lorenz Corr₀ RMSE against SW₂². Lower values are preferable on both axes. DHPF has the lowest mean dependency error in these two comparisons, while GAN has the lowest mean SW₂². All six methods are shown.
+
+Waveform inspection helps explain the mismatch between the metrics. On Lorenz, DHPF's channel variance averages 0.621 times the real variance, while its first-difference energy is 9.43 times the real value. The generated windows therefore combine reduced overall variation with excessive local variation. Figure 3 shows the first archived seed-0 sample, rather than a visually selected example. The aggregate diagnostics and five-seed metrics provide the evidence for the stated trends.
+
+{{figure:fig4_examples}}
+
+Figure 3. Fixed-index waveform examples expose amplitude and local-variation differences. Rows show Sine and Lorenz; columns show a real test window, DHPF, and GAN. Each panel displays channel 0 of the first available window, with a common vertical scale. Generated examples come from the seed-0 checkpoint. Real and generated windows are independent samples and are not paired reconstructions.
+
+### 4.3 Conditional Generation and Downstream Utility
+
+The relative performance changes on HAR (Table 3). DHPF has a mean class-averaged SW₂² of 0.3310, compared with 0.1690 for GAN. GAN, DDPM-v, and both CFM baselines also have lower mean ACF and Corr₀ errors. The dependency advantages observed on the synthetic tasks therefore do not carry over to these sensor recordings under the current configuration.
+
+{{table:har}}
+
+Downstream classification gives a complementary ranking. With logistic regression, DHPF achieves a test macro-F1 of 0.5195±0.0471, compared with 0.3816±0.0700 for GAN and 0.5425 for the equally sized real-data reference. Drifting-raw achieves the highest mean logistic-regression F1, 0.5610±0.0046, despite having the largest SW₂² among the six methods. This divergence shows why classification utility and full-distribution fidelity need separate evaluation.
+
+Some logistic-regression fits reach the fixed 2,000-iteration limit. We therefore repeat the probe comparison for all methods with a closed-form ridge classifier, using float64 Cholesky solves and validation-selected regularization. DHPF achieves 0.4847±0.0307, I-CFM achieves 0.4930±0.0161, and the real-data reference achieves 0.5356. Figure 4 reports both probes. The rankings depend on the evaluator, and DHPF's relatively favorable logistic-regression result is not a consistent advantage across classifiers.
+
+{{figure:fig5_har_utility}}
+
+Figure 4. HAR utility depends on the downstream classifier. Points and error bars show means and sample standard deviations over five generator seeds. Dashed lines denote probes trained on 3,600 class-balanced real windows. Left: logistic regression with a fixed iteration limit. Right: closed-form ridge classification. Regularization is selected on real validation subjects, and final scores are computed on held-out test subjects. Drift denotes Drifting-raw.
+
+### 4.4 Component Analysis
+
+Combining radial and solenoidal components improves Sine autocorrelation relative to either component alone (Table 4). The full model has an ACF RMSE of 0.0523, compared with 0.1839 for the radial-only model and 0.3367 for the solenoidal-only model. The solenoidal-only model instead has a lower SW₂² of 0.0423. Component choice therefore changes the balance between distribution fit and temporal correlation.
+
+{{table:ablations}}
+
+Time-dependent centers provide a smaller ACF improvement over learned, time-independent centers. The fixed-center model reaches 0.0564 ACF RMSE, close to the full model, and has lower mean SW₂² and Corr₀ error. The comparison supports a benefit from combining components, while the specific role of source motion is narrower. In the fixed-center control, source weights and widths remain time-dependent.
+
+We also compare the structured field with a direct MLP acceleration and an augmented first-order ODE. These controls use the same terminal matching objective, update budget, integration procedure, and evaluation protocol. Their mean SW₂² values are approximately 0.032 and 0.033, below DHPF's 0.192, while their ACF errors are approximately 0.235 and 0.266. Figure 5 summarizes the change in ranking. A flexible dynamics network can fit the endpoint distribution more closely under this protocol, whereas the shared-source field better preserves the measured Sine autocorrelation.
+
+{{figure:fig2_components}}
+
+Figure 5. Field structure changes the Sine trade-off under a common terminal objective. Left: ACF RMSE. Right: SW₂². Points and error bars show means and sample standard deviations over five training seeds. Full is DHPF; Fixed uses learned time-independent centers; Radial and Tangent retain one component; MLP2 uses a direct acceleration network; AugODE uses a first-order network on an augmented state. Both axes favor lower values.
+
+### 4.5 Numerical Accuracy and Computation
+
+Increasing the number of integration steps reduces endpoint error relative to a refined numerical reference (Figure 6). This diagnostic uses the same trained checkpoint and the same 512 initial states at each step count. A reference is accepted only after further refinement changes the endpoint by a relative RMS of less than 0.001. The experiment measures discretization error; the parameters themselves were optimized with K=32.
+
+{{figure:fig3_numerics}}
+
+Figure 6. Step refinement reduces numerical endpoint error. The horizontal axis is the number of explicit midpoint steps K, with 2K field queries. The vertical axis is endpoint RMS relative to the validated refined reference. Each curve uses one seed-0 checkpoint and 512 fixed initial states; HAR uses activity class 0. These are numerical diagnostics rather than estimates of variation across training seeds.
+
+The computational difference is substantial during training. On Sine, synchronized update times average 78.2 ms for DHPF, 1.7 ms for I-CFM, and 3.4 ms for OT-CFM. DHPF differentiates through integration and computes an endpoint assignment at every update. Table 5 also reports end-to-end generation time for a batch of 512 windows. The inference measurements include random-state generation, source preparation where applicable, and transfer of the output to CPU. They are medians of three technical repeats from one trained checkpoint.
+
+{{table:timing}}
+
+Field-query counts describe the numerical procedure but do not imply equal cost per query. In DHPF, the source network can be evaluated jointly at all required times, followed by analytic field queries. The CFM baselines evaluate a sample-dependent MLP at each solver stage, while DDPM-v performs 1,000 denoising evaluations. GAN and Drifting-raw use one generator pass. The measured times, together with the quality metrics, describe the operating point of each implementation.
+
+## 5 Related Work
+
+Diffusion and flow-based generation. DDPM formulates generation as the reversal of a Gaussian corruption chain [3]. Flow Matching trains continuous generators by regressing conditional vector fields [4]. The CFM formulation separates the choice of conditional paths from the coupling between their endpoints, including independent and minibatch-OT couplings [5]. DHPF instead fits the output distribution of a structured second-order solver using an assignment computed after generation. This distinction concerns both the field representation and the location of the matching operation in training.
+
+Drifting and endpoint objectives. Drifting Models use a distribution-dependent field to update a one-pass generator through a stop-gradient target [6]. Second Order Drifting Models introduce auxiliary dynamics into the training-time distribution evolution [19]. In DHPF, position and velocity are inference-time states, and the batch-dependent operation is the terminal assignment. The shared acceleration field itself depends on learned parameters, time, position, and the external condition. Analog Interaction Systems also learn generative dynamics through terminal distribution supervision, with time-varying physical interactions and adversarial training [13]. DHPF uses analytic radial/skew-symmetric sources and direct empirical transport between generated and real endpoints.
+
+Second-order and structured fields. Neural ODEs provide differentiable continuous-time transformations [20], and second-order neural ODEs study position-velocity representations [7]. KineFlow uses second-order flow matching for history-conditioned time-series forecasting [8], while VTV-FM derives a terminal-velocity closure and regression formulation [9]. DHPF learns complete-window generation through terminal matching with a velocity-independent acceleration. Its solenoidal component is related to divergence-free parameterizations based on skew-symmetric matrix potentials [10], Helmholtz–Hodge Gaussian processes [11], and divergence-free kernel reconstruction [12]. The contribution is the resulting generative construction and its empirical behavior, rather than a new decomposition theorem.
+
+Time-series generation. TimeGAN combines adversarial training with a learned temporal embedding and supervised temporal objectives [1]. Diffusion-TS uses time-series-specific representations within a diffusion model [2]. These approaches motivate architectures that explicitly model observation-time structure. Our study examines a complementary representation in which the whole window is a point in a shared dynamical field. The baseline comparison isolates basic generative formulations with vector networks; specialized time-series systems remain a separate benchmark for future evaluation.
+
+## 6 Discussion and Conclusion
+
+DHPF provides an explicit construction of a time-series generator from moving sources, radial and solenoidal acceleration, and terminal distribution matching. The field components have explicit mathematical properties, and bounded parameters ensure well-defined continuous dynamics over the generation interval. Training and sampling follow directly from the same generator, with exact minibatch assignment supplying endpoint supervision.
+
+The empirical contribution is a reproducible distinction between dependency accuracy and distribution fidelity. DHPF improves the measured Sine autocorrelation and Lorenz zero-lag channel correlation relative to the five baseline implementations, but has poorer amplitude fidelity and forecasting utility than GAN. The fixed-center and direct-network controls further show that a benefit on one statistic does not establish the necessity of source motion or the general superiority of second-order dynamics. The structure acts as a modeling restriction whose effects depend on the task and the metric.
+
+Several conditions determine the scope of these results. The evaluation uses three fixed-length tasks, one real sensor dataset, a two-value learning-rate search, and a fixed update budget. The five seeds measure training randomness rather than uncertainty over subject splits or datasets. Exact paired sign tests over the five seeds have a minimum two-sided p-value of 0.0625; none of the 90 comparisons passes Holm correction. The observed improvements are therefore descriptive, including the consistent seed-wise directions reported above. Generalization to longer, irregularly sampled, missing-value, or history-conditioned sequences requires a corresponding training and evaluation design.
+
+The model offers direct access to field components, but these components describe the learned transport in generation time. Their centers and coefficients are not identified physical causes of the observed signals, and second-order generation does not enforce smoothness in observation time. A productive next step is to test when this explicit field representation is useful enough to justify its fitting and computation costs, using additional real datasets and stronger time-series-specific baselines. The present study supplies the formulation, implementation, and quantitative trade-offs for that investigation.
+
+## References
+
+{{references}}
+
+## Appendix A. Structural Properties of the Continuous Model
+
+### A.1 Gradient and Solenoidal Components
+
+Fix generation time and condition. Assume that source parameters are independent of the query position and that each potential ψᵢ is twice continuously differentiable in space. Let Hᵢ be its Hessian. Since Hᵢ is symmetric and Sᵢ is skew-symmetric, the component Jacobians satisfy
+
+{{equation:9}}
+
+For the radial field, the Jacobian is a sum of scalar multiples of symmetric matrices and is therefore symmetric. For the solenoidal field, the divergence is the trace of its Jacobian. Cyclic invariance of the trace and transposition give tr(SᵢHᵢ)=−tr(HᵢSᵢ), so every term is zero. This proves Equation (9). In two and three dimensions, the symmetric-Jacobian condition is the usual curl-free condition. In arbitrary dimension, it means that the antisymmetric part of the spatial derivative vanishes. The construction supplies these two component properties; it does not specify a unique orthogonal Helmholtz–Hodge decomposition on a bounded domain.
+
+### A.2 Existence and Uniqueness
+
+Assume a finite number of sources, source parameters continuous in t, a uniform lower width bound σ_min>0, and bounded radial coefficients and skew-symmetric matrices over [0,1]. For qᵢ=||rᵢ||₂²+σᵢ², direct differentiation yields
+
+{{equation:10}}
+
+The kernel bound follows by maximizing s/(s²+σ²)^(3/2) for s≥0. The maximum occurs at s=σ/√2 and equals 2/(3√3σ²). For the derivative, the triangle inequality gives ||DₓKᵢ||₂≤qᵢ^(−3/2)+3||rᵢ||₂²qᵢ^(−5/2)≤4/σ_min³. The bounds are uniform in x. Multiplication by bounded αᵢ and Sᵢ and summation over finitely many sources preserve boundedness and global spatial Lipschitz continuity of the acceleration.
+
+The phase-space vector field is F(x,v,t)=(v,aθ(x,t)). It is globally Lipschitz in the state and has at most linear growth. Standard ODE existence and uniqueness then give one solution on the entire finite interval for every finite initial state. The constants depend on the width bound, coefficient bounds, and number of sources. This statement concerns the continuous system; numerical accuracy is evaluated separately in Figure 6.
+
+### A.3 Phase-Space Volume
+
+For the velocity-independent acceleration in Equation (1), the phase-space Jacobian has zero trace. With s=(x,v) and Φₜ the continuous flow map,
+
+{{equation:11}}
+
+Liouville's formula gives the determinant in Equation (11), since the phase-space divergence is zero. The position marginal can still change because it is obtained by projecting the joint position-velocity distribution. The same volume property holds for the direct-MLP acceleration control. A general solenoidal acceleration can have a nonsymmetric position Jacobian, so volume preservation alone does not give a Hamiltonian formulation, symplecticity, or energy conservation. The explicit midpoint discretization also need not preserve volume exactly.
+
+## Appendix B. Implementation and Evaluation Details
+
+### B.1 Data and Normalization
+
+{{table:datasets}}
+
+Sine is constructed from random three-channel oscillatory mixtures with frequencies in [0.3,2.5] and an observation-time spacing of 0.02. Lorenz uses the standard parameters (10,28,8/3), a fourth-order Runge–Kutta solver with step size 0.01, and 500 burn-in steps. Independent complete trajectories form the synthetic splits. Each window contains 128 observations. The UCI HAR channels comprise total acceleration, body acceleration, and gyroscope measurements sampled at 50 Hz [17]. The original windows overlap by 50%. We retain the official test subjects and use subjects 5, 16, 25, and 26 from the official training partition for validation. Subjects are disjoint across the resulting splits; overlapping windows remain within a split.
+
+Normalization statistics are estimated from training data only and applied to validation, test, and generated samples. All distribution and dependence metrics are computed in this common normalized space. We generate 2,000 evaluation windows per synthetic task and 600 windows for each of the six HAR classes, for a total of 3,600 HAR windows.
+
+### B.2 Networks and Optimization
+
+The DHPF source network uses learned 64-dimensional identities, a linear map of the 17-dimensional time encoding, and an optional 64-dimensional class embedding. Each of its two residual blocks applies LayerNorm, a 64-to-128 linear map, SiLU, and a 128-to-64 map. A shared output head produces the source parameters. The source count is 32 and the factor rank is 2. The network receives no observed window or sample-dependent batch statistic.
+
+A learned base center and a time-dependent offset are added and transformed by 3.5 tanh. Widths lie between 0.15 and 1.5 through a sigmoid transformation. With A=8(d/2)^(3/2), radial coefficients are bounded by A in magnitude. The raw low-rank factors are added to learned base factors, transformed by tanh, and scaled by √A/√(dr). These transformations provide the finite parameter bounds used in Appendix A. The fixed-center control removes the time-dependent center offset while retaining learned centers and time-dependent weights and widths.
+
+The vector baselines use three hidden layers with SiLU activations, a 17-dimensional time encoding, and a 16-dimensional class embedding for HAR. Width is selected to approximate DHPF's generator parameter count. On Sine and Lorenz, DHPF has 222,978 parameters and the baseline generator has 222,304; on HAR the counts are 595,842 and 596,798. GAN additionally trains a discriminator, so the total trainable parameter counts differ. DHPF, GAN, and Drifting-raw use the same dimensionality for their position/noise input; DHPF additionally samples the auxiliary velocity.
+
+Generators use Adam with β=(0.9,0.999), and gradients are clipped to norm 10. The GAN discriminator uses Adam with β=(0.5,0.9), spectral normalization, and a hinge loss, with one discriminator update per generator update. I-CFM samples noise and observations independently; OT-CFM obtains their coupling by exact minibatch assignment before constructing linear interpolation and velocity targets. Drifting-raw uses distance-based affinities, detached drift targets, and temperatures 0.02, 0.05, and 0.2. Its negative examples come from the generated batch. The time-series study retains the same DHPF source network and dynamics throughout.
+
+DDPM-v uses the cosine noise schedule and predicts the v target [15,16]. Schedule coefficients are constructed in float64 before conversion for training, and the conversion between data, noise, and v targets is checked numerically. Sampling uses all 1,000 ancestral steps, without clipping, distillation, or accelerated DDIM sampling. The v target in this baseline is a diffusion parameterization and is distinct from DHPF's auxiliary velocity.
+
+### B.3 Metric Definitions and Downstream Probes
+
+SW₂² averages squared one-dimensional Wasserstein distances across 256 fixed Gaussian projection directions. Projected samples are sorted; when sample counts differ, empirical quantiles are compared at common probabilities. MMD² uses an RBF bandwidth determined from training data and at most 1,024 samples per distribution. Its U-statistic estimate can be negative and is retained without clipping. The unbiasedness property assumes independent samples; overlapping HAR windows do not satisfy that assumption generally.
+
+For ACF, each window is centered over observation time. Lagged autocovariances for lags 0–32 are normalized by channel variance, and RMSE compares generated and real summaries. Corr₀ flattens windows and observation positions before forming the channel Pearson correlation matrix. It measures zero-lag dependence rather than the full lagged cross-correlation function. Power-spectrum RMSE compares averages of |rFFT|²/128 after window centering, retaining absolute power differences. The metrics are summarized within each HAR class before taking their equally weighted mean.
+
+Forecasting probes use ridge regression with regularization selected from {0.01,1,100} on real validation windows. HAR logistic regression selects C from {0.01,1,100}, with a 2,000-iteration limit. The ridge classifier uses the same three regularization values and float64 Cholesky solves. All HAR probes train on 3,600 class-balanced windows and report macro-F1 on the complete real test split. The real-data references use the same training sample counts. Real-to-real distribution references are obtained from five training-set subsamples against the test set; their variation reflects subsampling rather than generator training seeds.
+
+The formal generator seeds are 0–4. Validation generation uses seed 70000, test generation uses seed 80000, projection directions use seed 61000, and real-reference/probe subsampling uses seed 90000. The 90 paired sign tests compare DHPF with five baselines on three tasks and six metrics per task: five distribution/dependence metrics and the primary downstream metric. HAR's primary downstream metric is logistic-regression macro-F1; the ridge probe is a descriptive robustness analysis. Holm correction is applied over all 90 comparisons. The local-advantage comparisons are exploratory findings from the existing results, not preregistered confirmatory hypotheses.
+
+The software environment is Python 3.14.2 and PyTorch 2.9.1+cu128, with CPU numerical libraries limited to two threads. Archived runs retain configuration, data and source hashes, training and validation logs, selected checkpoints, and generated samples.
+
+## Appendix C. Additional Results and Failure Analysis
+
+{{table:extra_metrics}}
+
+Table C1 extends the main comparison with MMD² and HAR power-spectrum error. These values use the same selected checkpoints, generated samples, and five training seeds as the main tables. The metrics evaluate different properties and scales, so we report each dataset separately rather than summing them into a cross-dataset score.
+
+{{table:har_classes}}
+
+Table C2 resolves DHPF's HAR results by activity. Dynamic activities have substantially larger SW₂² and power-spectrum errors than sitting and standing. The class-average table therefore combines heterogeneous levels of fit. All baselines use the same classwise evaluation and weighting.
+
+An earlier diffusion configuration used a linear schedule and noise prediction. Its mean SW₂² was approximately 2.70×10⁴ on Sine and 2.71×10⁴ on Lorenz. Target-conversion and reverse-process checks found no error in its core sampling equations, but the configuration produced poorly scaled samples under the training budget. Using the same network with the cosine/v formulation reduced these means to 0.1538 and 0.2308. The main comparison uses the numerically checked DDPM-v configuration; the earlier runs remain a diagnostic of implementation and optimization sensitivity.
+
+Drifting-raw shows a narrow range of generated values on the synthetic tasks and has high SW₂². The result concerns its raw-coordinate objective, vector network, batch size, and training budget. The original image system's feature-space losses, pretrained encoders, and sample queues are not part of this adaptation. On HAR, its relatively high classification utility coexists with poor full-distribution metrics, reinforcing the need to evaluate both properties.

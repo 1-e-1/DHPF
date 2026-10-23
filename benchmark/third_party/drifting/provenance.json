@@ -1,0 +1,8 @@
+{
+  "upstream": "https://github.com/lambertae/drifting",
+  "adaptation": "benchmark.models.drifting_loss; raw coordinates, no fixed-negative memory bank or pretrained feature encoder",
+  "files": {
+    "LICENSE": "d91fede4cb730000a54a5d41a75b5b1a3834adda36278d5140538f937809173c",
+    "drift_loss.py": "445ba0485e1d81be81aee4e1d5458d85548db171ecd310c1fc855ea6242bc782"
+  }
+}

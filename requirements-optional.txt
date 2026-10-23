@@ -1,0 +1,6 @@
+torch-fidelity
+einops
+python-docx
+pymupdf
+lxml
+pywin32; sys_platform == "win32"
